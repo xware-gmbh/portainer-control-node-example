@@ -1,0 +1,102 @@
+parameters:
+- name: stage
+  displayName: Stage
+  type: string
+  default: TST
+  values:
+  - TST
+  - PRD
+
+trigger: none
+
+pool:
+  vmImage: 'ubuntu-20.04'
+
+variables:
+  - group: aci-portainer
+
+stages:
+
+- stage: TST
+  condition: or(eq(variables['Build.Reason'], 'PullRequest'), in('${{ parameters.stage }}', 'TST'))
+  jobs:
+  - job: TST_setup
+    steps:
+
+    - script: |
+        terraform init \
+        -backend-config="storage_account_name=$(storage_account_name)" \
+        -backend-config="resource_group_name=$(resource_group_name)" \
+        -backend-config="container_name=$(container_name)" \
+        -backend-config="key=$(key)" \
+        -backend-config="subscription_id=$(subscription_id)" \
+        -backend-config="tenant_id=$(tenant_id)" \
+        -backend-config="client_id=$(client_id)" \
+        -backend-config="client_secret=$(client_secret)"
+      displayName: 'Terraform: init'
+
+    - script: |
+        ./workspacetest.sh $(System.StageName)
+      displayName: 'Terraform: check workspaces'
+
+    - script: |
+        terraform plan \
+        -var="agent_secret=$(agent_secret)" \
+        -out out.plan
+      displayName: 'Terraform: plan'
+      env:
+        ARM_SUBSCRIPTION_ID: $(subscription_id)
+        ARM_CLIENT_ID:       $(client_id)
+        ARM_CLIENT_SECRET:   $(client_secret)
+        ARM_TENANT_ID:       $(tenant_id)
+
+    - script: |
+        terraform apply out.plan
+      displayName: 'Terraform: apply'
+      env:
+        ARM_SUBSCRIPTION_ID: $(subscription_id)
+        ARM_CLIENT_ID:       $(client_id)
+        ARM_CLIENT_SECRET:   $(client_secret)
+        ARM_TENANT_ID:       $(tenant_id)
+
+- stage: PRD
+  condition: in('${{ parameters.stage }}', 'PRD')
+  jobs:
+  - job: PRD_setup
+    steps:
+
+    - script: |
+        terraform init \
+        -backend-config="storage_account_name=$(storage_account_name)" \
+        -backend-config="resource_group_name=$(resource_group_name)" \
+        -backend-config="container_name=$(container_name)" \
+        -backend-config="key=$(key)" \
+        -backend-config="subscription_id=$(subscription_id)" \
+        -backend-config="tenant_id=$(tenant_id)" \
+        -backend-config="client_id=$(client_id)" \
+        -backend-config="client_secret=$(client_secret)"
+      displayName: 'Terraform: init'
+
+    - script: |
+        ./workspacetest.sh $(System.StageName)
+      displayName: 'Terraform: check workspaces'
+
+    - script: |
+        terraform plan \
+        -var="agent_secret=$(agent_secret)" \
+        -out out.plan
+      displayName: 'Terraform: plan'
+      env:
+        ARM_SUBSCRIPTION_ID: $(subscription_id)
+        ARM_CLIENT_ID:       $(client_id)
+        ARM_CLIENT_SECRET:   $(client_secret)
+        ARM_TENANT_ID:       $(tenant_id)
+
+    - script: |
+        terraform apply out.plan
+      displayName: 'Terraform: apply'
+      env:
+        ARM_SUBSCRIPTION_ID: $(subscription_id)
+        ARM_CLIENT_ID:       $(client_id)
+        ARM_CLIENT_SECRET:   $(client_secret)
+        ARM_TENANT_ID:       $(tenant_id)
