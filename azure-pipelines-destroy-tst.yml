@@ -1,0 +1,66 @@
+---
+trigger: none
+
+schedules:
+  - cron: "0 0 * * *"
+    displayName: Daily midnight destroy of stages
+    branches:
+      include:
+        - main
+        - feature/*
+        - fix/*
+
+variables:
+  - group: aci-portainer
+
+stages:
+  - stage: TST_DESTROY
+    displayName: "TST - Destroy"
+    jobs:
+      - deployment: TST_destroy
+        displayName: "Terraform destroy (TST)"
+        environment: aci-portainer-tst
+        pool:
+          vmImage: ubuntu-latest
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                - bash: |
+                    set -euxo pipefail
+                    wget -O - https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+                    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(grep -oP '(?<=UBUNTU_CODENAME=).*' /etc/os-release || lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list
+                    sudo apt update && sudo apt install -y terraform
+                  displayName: "Install Terraform"
+                - script: |
+                    terraform init \
+                      -lock-timeout=5m \
+                      -backend-config="storage_account_name=$(storage_account_name)" \
+                      -backend-config="resource_group_name=$(resource_group_name)" \
+                      -backend-config="container_name=$(container_name)" \
+                      -backend-config="key=$(key)" \
+                      -backend-config="subscription_id=$(subscription_id)" \
+                      -backend-config="tenant_id=$(tenant_id)" \
+                      -backend-config="client_id=$(client_id)" \
+                      -backend-config="client_secret=$(client_secret)"
+                  displayName: "Terraform: init"
+
+                - bash: terraform workspace select -or-create=true TST
+                  displayName: "Terraform: select workspace (TST)"
+
+                - script: |
+                    terraform destroy \
+                      -lock-timeout=5m \
+                      -var="agent_secret=$(agent_secret)" \
+                      -var="tenant_id=$(tenant_id)" \
+                      -var="subscription_id=$(subscription_id)" \
+                      -var="client_id=$(client_id)" \
+                      -var="client_secret=$(client_secret)" \
+                      -auto-approve
+                  displayName: "Terraform: destroy"
+                  env:
+                    ARM_SUBSCRIPTION_ID: $(subscription_id)
+                    ARM_CLIENT_ID: $(client_id)
+                    ARM_CLIENT_SECRET: $(client_secret)
+                    ARM_TENANT_ID: $(tenant_id)
