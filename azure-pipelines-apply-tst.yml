@@ -1,0 +1,154 @@
+---
+trigger: none
+pr: none
+
+variables:
+  - group: aci-portainer
+
+stages:
+  - stage: TST_PLAN
+    displayName: "TST - Plan"
+    jobs:
+      - job: TST_plan
+        displayName: "Terraform plan (TST)"
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - checkout: self
+          - bash: |
+              set -euxo pipefail
+              wget -O - https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+              echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(grep -oP '(?<=UBUNTU_CODENAME=).*' /etc/os-release || lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list
+              sudo apt update && sudo apt install -y terraform
+            displayName: "Install Terraform"
+
+          - bash: |
+              terraform init \
+                -lock-timeout=5m \
+                -backend-config="storage_account_name=$(storage_account_name)" \
+                -backend-config="resource_group_name=$(resource_group_name)" \
+                -backend-config="container_name=$(container_name)" \
+                -backend-config="key=$(key)" \
+                -backend-config="subscription_id=$(subscription_id)" \
+                -backend-config="tenant_id=$(tenant_id)" \
+                -backend-config="client_id=$(client_id)" \
+                -backend-config="client_secret=$(client_secret)"
+            displayName: "Terraform: init"
+
+          - bash: terraform workspace select -or-create=true TST
+            displayName: "Terraform: select workspace (TST)"
+
+          - bash: |
+              terraform plan \
+                -lock-timeout=5m \
+                -var="agent_secret=$(agent_secret)" \
+                -var="tenant_id=$(tenant_id)" \
+                -var="subscription_id=$(subscription_id)" \
+                -var="client_id=$(client_id)" \
+                -var="client_secret=$(client_secret)" \
+                -out out.plan
+              terraform show -no-color out.plan > out.plan.txt
+            displayName: "Terraform: plan"
+            env:
+              ARM_SUBSCRIPTION_ID: $(subscription_id)
+              ARM_CLIENT_ID: $(client_id)
+              ARM_CLIENT_SECRET: $(client_secret)
+              ARM_TENANT_ID: $(tenant_id)
+
+          - task: PublishPipelineArtifact@1
+            displayName: "Publish plan (TST, binary)"
+            inputs:
+              targetPath: "$(System.DefaultWorkingDirectory)/out.plan"
+              artifact: "tst-plan-binary"
+              publishLocation: "pipeline"
+
+          - task: PublishPipelineArtifact@1
+            displayName: "Publish plan (TST, readable)"
+            inputs:
+              targetPath: "$(System.DefaultWorkingDirectory)/out.plan.txt"
+              artifact: "tst-plan-text"
+              publishLocation: "pipeline"
+
+          - task: PublishPipelineArtifact@1
+            displayName: "Publish dependency lock file (TST)"
+            inputs:
+              targetPath: "$(System.DefaultWorkingDirectory)/.terraform.lock.hcl"
+              artifact: "tst-lockfile"
+              publishLocation: "pipeline"
+
+  - stage: TST_APPLY
+    displayName: "TST - Apply"
+    dependsOn: TST_PLAN
+    condition: succeeded()
+    jobs:
+      - deployment: TST_apply
+        displayName: "Terraform apply (TST)"
+        environment: aci-portainer-tst
+        pool:
+          vmImage: ubuntu-latest
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                - task: DownloadPipelineArtifact@2
+                  displayName: "Download plan (readable) for approvers"
+                  inputs:
+                    artifact: "tst-plan-text"
+                    path: "$(Pipeline.Workspace)/tst-plan"
+                - bash: |
+                    echo "Approval gate passed. The following plan was generated in the previous stage:"
+                    echo "--------------------------------------------------------------------------"
+                    head -n 200 "$(Pipeline.Workspace)/tst-plan/out.plan.txt" || true
+                    echo "--------------------------------------------------------------------------"
+                  displayName: "Show plan header in logs (optional)"
+
+                - bash: |
+                    set -euxo pipefail
+                    wget -O - https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+                    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(grep -oP '(?<=UBUNTU_CODENAME=).*' /etc/os-release || lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list
+                    sudo apt update && sudo apt install -y terraform
+                  displayName: "Install Terraform"
+
+                - task: DownloadPipelineArtifact@2
+                  displayName: "Download dependency lock file"
+                  inputs:
+                    artifact: "tst-lockfile"
+                    path: "$(Pipeline.Workspace)/tst-lock"
+
+                - bash: |
+                    set -euxo pipefail
+                    cp "$(Pipeline.Workspace)/tst-lock/.terraform.lock.hcl" "$(System.DefaultWorkingDirectory)/.terraform.lock.hcl"
+                  displayName: "Restore .terraform.lock.hcl"
+
+                - bash: |
+                    terraform init \
+                      -lock-timeout=5m \
+                      -backend-config="storage_account_name=$(storage_account_name)" \
+                      -backend-config="resource_group_name=$(resource_group_name)" \
+                      -backend-config="container_name=$(container_name)" \
+                      -backend-config="key=$(key)" \
+                      -backend-config="subscription_id=$(subscription_id)" \
+                      -backend-config="tenant_id=$(tenant_id)" \
+                      -backend-config="client_id=$(client_id)" \
+                      -backend-config="client_secret=$(client_secret)"
+                  displayName: "Terraform: init"
+
+                - bash: terraform workspace select -or-create=true TST
+                  displayName: "Terraform: select workspace (TST)"
+
+                - task: DownloadPipelineArtifact@2
+                  displayName: "Download plan (binary)"
+                  inputs:
+                    artifact: "tst-plan-binary"
+                    path: "$(Pipeline.Workspace)"
+
+                - bash: |
+                    set -euxo pipefail
+                    terraform apply -lock-timeout=5m "$(Pipeline.Workspace)/out.plan"
+                  displayName: "Terraform: apply"
+                  env:
+                    ARM_SUBSCRIPTION_ID: $(subscription_id)
+                    ARM_CLIENT_ID: $(client_id)
+                    ARM_CLIENT_SECRET: $(client_secret)
+                    ARM_TENANT_ID: $(tenant_id)
